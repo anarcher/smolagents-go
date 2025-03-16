@@ -129,7 +129,7 @@ func (m *AnthropicModel) generateInternal(ctx context.Context, messages []Messag
 				continue
 			}
 
-			// Create tool parameter
+			// Create tool parameter with required fields
 			toolParam := anthropic.ToolParam{
 				Name: anthropic.F(name),
 			}
@@ -139,12 +139,28 @@ func (m *AnthropicModel) generateInternal(ctx context.Context, messages []Messag
 				toolParam.Description = anthropic.F(description)
 			}
 
-			// Add input schema if provided
-			if parameters, ok := functionData["parameters"].(map[string]any); ok {
-				// Pass parameters map directly as input schema
-				// This is a workaround for type system issues
-				toolParam.InputSchema = anthropic.F(any(parameters))
+			// Anthropic requires input_schema for tools
+			// Format the schema according to Anthropic's expectations
+			inputSchema := map[string]any{
+				"type": "object",
+				"properties": map[string]any{},
+				"required": []string{},
 			}
+			
+			// Add properties if provided
+			if parameters, ok := functionData["parameters"].(map[string]any); ok {
+				if props, ok := parameters["properties"].(map[string]any); ok {
+					inputSchema["properties"] = props
+				}
+				
+				// Add required fields
+				if required, ok := parameters["required"].([]string); ok {
+					inputSchema["required"] = required
+				}
+			}
+			
+			// Always set input schema - it's required by Anthropic
+			toolParam.InputSchema = anthropic.F(any(inputSchema))
 
 			anthropicTools = append(anthropicTools, toolParam)
 		}
@@ -231,4 +247,3 @@ func WithAnthropicModel(modelName string) Option {
 		}
 	}
 }
-
