@@ -48,7 +48,7 @@ func main() {
 	// Example 3: Using AnthropicModel
 	fmt.Println("\nExample 3: Using AnthropicModel")
 	anthropicModel := models.NewAnthropicModel(
-		"claude-3-opus-20240229",
+		"claude-3-5-haiku-latest",
 		models.WithApiKey(os.Getenv("ANTHROPIC_API_KEY")),
 		models.WithMaxTokens(1024),
 	)

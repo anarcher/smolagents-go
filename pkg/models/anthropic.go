@@ -86,14 +86,17 @@ func (m *AnthropicModel) generateInternal(ctx context.Context, messages []Messag
 
 		switch msg.Role {
 		case RoleUser:
-			anthropicMsg = anthropic.NewUserMessage(anthropic.NewTextBlock(msg.Content))
+			anthropicMsg = anthropic.NewUserMessage(
+				anthropic.NewTextBlock(msg.Content),
+			)
 		case RoleAssistant:
-			anthropicMsg = anthropic.NewAssistantMessage(anthropic.NewTextBlock(msg.Content))
+			anthropicMsg = anthropic.NewAssistantMessage(
+				anthropic.NewTextBlock(msg.Content),
+			)
 		case RoleTool:
-			// For tool messages, create a text block with the tool result
-			// This is a simpler way to handle tool results in messages
-			toolMsg := fmt.Sprintf("Tool result from %s: %s", msg.Name, msg.Content)
-			anthropicMsg = anthropic.NewAssistantMessage(anthropic.NewTextBlock(toolMsg))
+			anthropicMsg = anthropic.NewAssistantMessage(
+				anthropic.NewTextBlock(msg.Content),
+			)
 		}
 
 		anthropicMessages = append(anthropicMessages, anthropicMsg)
@@ -116,7 +119,7 @@ func (m *AnthropicModel) generateInternal(ctx context.Context, messages []Messag
 
 	// Add tools if provided
 	if len(tools) > 0 {
-		var anthropicTools []anthropic.ToolParam
+		var anthropicTools []anthropic.ToolUnionUnionParam
 		for _, tool := range tools {
 			// Extract tool properties
 			functionData, ok := tool["function"].(map[string]any)
@@ -139,44 +142,22 @@ func (m *AnthropicModel) generateInternal(ctx context.Context, messages []Messag
 				toolParam.Description = anthropic.F(description)
 			}
 
-			// Anthropic requires input_schema for tools
-			// Format the schema according to Anthropic's expectations
-			inputSchema := map[string]any{
-				"type": "object",
-				"properties": map[string]any{},
-				"required": []string{},
-			}
-			
-			// Add properties if provided
-			if parameters, ok := functionData["parameters"].(map[string]any); ok {
-				if props, ok := parameters["properties"].(map[string]any); ok {
-					inputSchema["properties"] = props
-				}
-				
-				// Add required fields
-				if required, ok := parameters["required"].([]string); ok {
-					inputSchema["required"] = required
+			var parameters map[string]any
+			if params, ok := functionData["parameters"].(map[string]any); ok {
+				parameters = params
+			} else {
+				parameters = map[string]any{
+					"type":       "object",
+					"properties": map[string]any{},
 				}
 			}
-			
-			// Always set input schema - it's required by Anthropic
-			toolParam.InputSchema = anthropic.F(any(inputSchema))
+
+			toolParam.InputSchema = anthropic.F(any(parameters))
 
 			anthropicTools = append(anthropicTools, toolParam)
 		}
+		params.Tools = anthropic.F(anthropicTools)
 
-		if len(anthropicTools) > 0 {
-			// This is a workaround for type casting issues
-			// Convert the tools with proper type casting
-			var toolUnions []anthropic.ToolUnionUnionParam
-			for _, tool := range anthropicTools {
-				// Convert each tool to the union type
-				toolUnions = append(toolUnions, tool)
-			}
-
-			// Assign the tools to the params
-			params.Tools = anthropic.F(toolUnions)
-		}
 	}
 
 	// Make the API call
@@ -190,52 +171,29 @@ func (m *AnthropicModel) generateInternal(ctx context.Context, messages []Messag
 		return "", errors.New("empty response from model")
 	}
 
-	// Check the content type in response
-	content := resp.Content[0]
+	var content string
 
-	// Check if there's a tool call
-	if content.Type == "tool_use" {
-		// For Claude-3, tool_use content has a JSON structure with Name and Input
-		// We can access it through Content.JSON which has the raw JSON
-		// Extract tool use info from the response
-		rawContent, err := json.Marshal(content)
-		if err != nil {
-			return "", fmt.Errorf("failed to marshal tool_use content: %w", err)
+	for _, block := range resp.Content {
+		switch b := block.AsUnion().(type) {
+		case anthropic.TextBlock:
+			// Append text from text blocks.
+			content += b.Text
+		case anthropic.ToolUseBlock:
+			// Create a properly formatted tool call response for the agent
+			toolResponse := map[string]any{
+				"tool": b.Name,
+				"args": b.Input,
+			}
+			toolResponseJSON, err := json.Marshal(toolResponse)
+			if err != nil {
+				return "", fmt.Errorf("failed to marshal tool response: %w", err)
+			}
+			content += "\r\n"
+			content += string(toolResponseJSON)
+
 		}
-
-		// Parse the tool use data
-		var toolUseData struct {
-			ToolUse struct {
-				Name  string          `json:"name"`
-				Input json.RawMessage `json:"input"`
-			} `json:"tool_use"`
-		}
-
-		err = json.Unmarshal(rawContent, &toolUseData)
-		if err != nil {
-			return "", fmt.Errorf("failed to unmarshal tool_use data: %w", err)
-		}
-
-		// Create a properly formatted tool call response
-		toolResponse := map[string]any{
-			"tool": toolUseData.ToolUse.Name,
-			"args": toolUseData.ToolUse.Input,
-		}
-
-		toolResponseJSON, err := json.Marshal(toolResponse)
-		if err != nil {
-			return "", err
-		}
-
-		return string(toolResponseJSON), nil
 	}
-
-	// Return text content
-	if content.Type == "text" {
-		return content.Text, nil
-	}
-
-	return "", errors.New("unsupported response content type")
+	return content, nil
 }
 
 // WithAnthropicModel sets the model for Anthropic API requests.
